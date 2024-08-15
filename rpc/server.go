@@ -75,7 +75,7 @@ func (server *Server) ServeConn(conn net.Conn) {
 }
 
 // invalidRequest
-var invalidRequest = "invalid"
+var invalidRequest = struct{}{}
 
 func (server *Server) serveCodec(cc codec.Codec) {
 	sending := new(sync.Mutex) // make sure to send a complete response
@@ -121,6 +121,7 @@ func (server *Server) readRequest(cc codec.Codec) (*Request, error) {
 
 	req.body = reflect.New(reflect.TypeOf(""))
 	if err := cc.ReadBody(req.body.Interface()); err != nil {
+		log.Println("rpc server: read request body error:", err)
 		return req, err
 	}
 
@@ -137,10 +138,9 @@ func (server *Server) sendResponse(cc codec.Codec, header *codec.Header, body in
 }
 
 func (server *Server) handleRequest(cc codec.Codec, req *Request, sending *sync.Mutex, wg *sync.WaitGroup) {
-	// TODO 解析 header body ，执行函数，返回 response
 	defer wg.Done()
 
 	fmt.Println("handle request", req.header.Seq, req.body.Elem().String())
-	resp := fmt.Sprintf("rpc resp %d", req.header.Seq)
-	server.sendResponse(cc, req.header, resp, sending)
+	resp := reflect.ValueOf(fmt.Sprintf("rpc resp %d", req.header.Seq))
+	server.sendResponse(cc, req.header, resp.Interface(), sending)
 }
