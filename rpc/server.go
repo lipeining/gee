@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"reflect"
 	"rpc/codec"
 	"strings"
@@ -20,6 +21,12 @@ const MagicNumber = 0x3bef5c
 type Server struct {
 	serviceMap sync.Map
 }
+
+const (
+	connected        = "200 Connected to Gee RPC"
+	defaultRPCPath   = "/_geeprc_"
+	defaultDebugPath = "/debug/geerpc"
+)
 
 // NewServer returns a new Server.
 func NewServer() *Server {
@@ -215,4 +222,35 @@ func (server *Server) handleCallError(cc codec.Codec, req *Request, sending *syn
 	}
 
 	server.sendResponse(cc, req.header, req.replyv.Interface(), sending)
+}
+
+// ServeHTTP implements an http.Handler that answers RPC requests.
+func (server *Server) ServeHTTP(res http.ResponseWriter, req *http.Request) {
+	if req.Method != "CONNECT" {
+		res.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		res.WriteHeader(http.StatusMethodNotAllowed)
+		_, _ = io.WriteString(res, "405 must CONNECT\n")
+		return
+	}
+
+	conn, _, err := res.(http.Hijacker).Hijack()
+	if err != nil {
+		log.Print("rpc hijacking ", req.RemoteAddr, ": ", err.Error())
+		return
+	}
+	_, _ = io.WriteString(conn, "HTTP/1.0 "+connected+"\n\n")
+	server.ServeConn(conn)
+}
+
+// HandleHTTP registers an HTTP handler for RPC messages on rpcPath.
+// It is still necessary to invoke http.Serve(), typically in a go statement.
+func (server *Server) HandleHTTP() {
+	http.Handle(defaultRPCPath, server)
+	http.Handle(defaultDebugPath, debugHTTP{server})
+	log.Println("rpc server debug path:", defaultDebugPath)
+}
+
+// HandleHTTP is a convenient approach for default server to register HTTP handlers
+func HandleHTTP() {
+	DefaultServer.HandleHTTP()
 }
