@@ -1,25 +1,24 @@
-package codec
+package gobrpc
 
 import (
 	"bufio"
 	"encoding/gob"
 	"io"
 	"log"
+	"rpc"
 )
 
-type GobCodec struct {
+type clientCodec struct {
 	conn io.ReadWriteCloser
 	buf  *bufio.Writer
 	dec  *gob.Decoder
 	enc  *gob.Encoder
 }
 
-var _ Codec = (*GobCodec)(nil)
-
-func NewGobCodec(conn io.ReadWriteCloser) Codec {
+func NewClientCodec(conn io.ReadWriteCloser) rpc.ClientCodec {
 	buf := bufio.NewWriter(conn)
 
-	return &GobCodec{
+	return &clientCodec{
 		conn: conn,
 		buf:  buf,
 		dec:  gob.NewDecoder(conn),
@@ -27,25 +26,25 @@ func NewGobCodec(conn io.ReadWriteCloser) Codec {
 	}
 }
 
-func (c *GobCodec) ReadHeader(header *Header) error {
+func (c *clientCodec) ReadResponseHeader(header *rpc.Response) error {
 	err := c.dec.Decode(header)
 	if err != nil {
-		log.Println("rpc codec: gob error read header:", err)
+		log.Println("gobrpc: got error read header:", err)
 	}
 
 	return err
 }
 
-func (c *GobCodec) ReadBody(body interface{}) error {
+func (c *clientCodec) ReadResponseBody(body interface{}) error {
 	err := c.dec.Decode(body)
 	if err != nil {
-		log.Println("rpc codec: gob error read body:", err)
+		log.Println("gobrpc: got error read body:", err)
 	}
 
 	return err
 }
 
-func (c *GobCodec) Write(header *Header, body interface{}) (err error) {
+func (c *clientCodec) WriteRequest(header *rpc.Request, body interface{}) (err error) {
 	defer func() {
 		// TODO: 为什么忽略错误？
 		_ = c.buf.Flush()
@@ -55,17 +54,17 @@ func (c *GobCodec) Write(header *Header, body interface{}) (err error) {
 	}()
 
 	if err := c.enc.Encode(header); err != nil {
-		log.Println("rpc codec: gob error encoding header:", err)
+		log.Println("gobrpc: got error encoding header:", err)
 		return err
 	}
 	if err := c.enc.Encode(body); err != nil {
-		log.Println("rpc codec: gob error encoding body:", err)
+		log.Println("gobrpc: got error encoding body:", err)
 		return err
 	}
 
 	return nil
 }
 
-func (c *GobCodec) Close() error {
+func (c *clientCodec) Close() error {
 	return c.conn.Close()
 }

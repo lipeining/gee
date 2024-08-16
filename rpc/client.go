@@ -11,14 +11,6 @@ import (
 	"sync"
 )
 
-type ClientCodec interface {
-	WriteRequest(*Request, any) error
-	ReadResponseHeader(*Response) error
-	ReadResponseBody(any) error
-
-	Close() error
-}
-
 // Call represents an active RPC.
 type Call struct {
 	Seq           uint64
@@ -43,8 +35,6 @@ func (call *Call) done() {
 type Client struct {
 	cc       codec.Codec
 	opt      *Option
-	sending  sync.Mutex // protect following
-	header   codec.Header
 	mu       sync.Mutex // protect following
 	seq      uint64
 	pending  map[uint64]*Call
@@ -55,42 +45,6 @@ type Client struct {
 var _ io.Closer = (*Client)(nil)
 
 var ErrShutdown = errors.New("connection is shut down")
-
-func (client *Client) receive() {
-	// call is missing
-	// call is return, but got server.Response.Error
-	// everything is good, read body and return to reply
-	var err error
-
-	for err == nil {
-		var h codec.Header
-		if err = client.cc.ReadHeader(&h); err != nil {
-			break
-		}
-
-		call := client.removeCall(h.Seq)
-		if call == nil {
-			// call is missing
-			break
-		}
-
-		if h.Error != "" {
-			// call got error
-			call.Error = errors.New(h.Error)
-			call.done()
-			break
-		}
-
-		// read reply(pointer), set call reply
-		err = client.cc.ReadBody(call.Reply)
-		if err != nil {
-			call.Error = errors.New("read body error " + err.Error())
-		}
-		call.done()
-	}
-
-	client.terminateCalls(err)
-}
 
 func NewClient(conn net.Conn, opt *Option) (*Client, error) {
 	f := codec.NewCodecFuncMap[opt.CodecType]
@@ -116,6 +70,40 @@ func NewClient(conn net.Conn, opt *Option) (*Client, error) {
 	go client.receive()
 
 	return client, nil
+}
+
+func (client *Client) receive() {
+	var err error
+
+	for err == nil {
+		var h codec.Header
+		if err = client.cc.ReadHeader(&h); err != nil {
+			log.Println("client receive got error:", err)
+			break
+		}
+
+		call := client.removeCall(h.Seq)
+		if call == nil {
+			// call is missing
+			break
+		}
+
+		if h.Error != "" {
+			// call got error
+			call.Error = errors.New(h.Error)
+			call.done()
+			break
+		}
+
+		// read reply(pointer), set call reply
+		err = client.cc.ReadBody(call.Reply)
+		if err != nil {
+			call.Error = errors.New("read body error " + err.Error())
+		}
+		call.done()
+	}
+
+	client.terminateCalls(err)
 }
 
 func parseOptions(opts ...*Option) (*Option, error) {
@@ -158,7 +146,7 @@ func Dial(network, address string, opts ...*Option) (*Client, error) {
 
 func (client *Client) Go(serviceMethod string, args, reply interface{}, done chan *Call) *Call {
 	if done == nil {
-		done = make(chan *Call, 10)
+		done = make(chan *Call, 1)
 	} else if cap(done) == 0 {
 		log.Panic("rpc client: done channel is unbuffered")
 	}
@@ -181,9 +169,6 @@ func (client *Client) Call(serviceMethod string, args, reply interface{}) error 
 }
 
 func (client *Client) send(call *Call) {
-	client.sending.Lock()
-	defer client.sending.Unlock()
-
 	// register this call.
 	seq, err := client.registerCall(call)
 	if err != nil {
@@ -192,7 +177,7 @@ func (client *Client) send(call *Call) {
 		return
 	}
 
-	// prepare request header, TODO: use client.header
+	// prepare request header
 	h := codec.Header{
 		ServiceMethod: call.ServiceMethod,
 		Seq:           seq,
@@ -220,6 +205,7 @@ func (client *Client) Close() error {
 		return ErrShutdown
 	}
 	client.closing = true
+
 	return client.cc.Close()
 }
 
@@ -232,10 +218,6 @@ func (client *Client) IsAvailable() bool {
 }
 
 func (client *Client) registerCall(call *Call) (uint64, error) {
-	// if !client.IsAvailable() {
-	// 	return 0, ErrShutdown
-	// }
-
 	client.mu.Lock()
 	defer client.mu.Unlock()
 
@@ -260,8 +242,6 @@ func (client *Client) removeCall(seq uint64) *Call {
 }
 
 func (client *Client) terminateCalls(err error) {
-	client.sending.Lock()
-	defer client.sending.Unlock()
 	client.mu.Lock()
 	defer client.mu.Unlock()
 
