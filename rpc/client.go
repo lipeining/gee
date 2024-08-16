@@ -85,12 +85,14 @@ func (client *Client) receive() {
 		call := client.removeCall(h.Seq)
 		if call == nil {
 			// call is missing
+			err = client.cc.ReadBody(nil)
 			break
 		}
 
 		if h.Error != "" {
 			// call got error
 			call.Error = errors.New(h.Error)
+			err = client.cc.ReadBody(nil)
 			call.done()
 			break
 		}

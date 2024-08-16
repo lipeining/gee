@@ -7,7 +7,10 @@ import (
 
 type Request struct {
 	header *codec.Header
-	body   reflect.Value
+	argv   reflect.Value
+	replyv reflect.Value
+	mtype  *methodType
+	service    *service
 }
 
 // type Request struct {
