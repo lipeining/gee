@@ -11,19 +11,10 @@ import (
 	"rpc/codec"
 	"strings"
 	"sync"
+	"time"
 )
 
 const MagicNumber = 0x3bef5c
-
-type Option struct {
-	MagicNumber int        // MagicNumber marks this's a gee rpc request
-	CodecType   codec.Type // client may choose different Codec to encode body
-}
-
-var DefaultOption = &Option{
-	MagicNumber: MagicNumber,
-	CodecType:   codec.GobType,
-}
 
 // Server represents an RPC Server.
 type Server struct {
@@ -112,13 +103,13 @@ func (server *Server) ServeConn(conn net.Conn) {
 		return
 	}
 
-	server.serveCodec(codecFactory(conn))
+	server.serveCodec(codecFactory(conn), &opt)
 }
 
 // invalidRequest
 var invalidRequest = struct{}{}
 
-func (server *Server) serveCodec(cc codec.Codec) {
+func (server *Server) serveCodec(cc codec.Codec, opt *Option) {
 	sending := new(sync.Mutex) // make sure to send a complete response
 	wg := new(sync.WaitGroup)  // wait until all request are handled
 
@@ -135,7 +126,7 @@ func (server *Server) serveCodec(cc codec.Codec) {
 			continue
 		}
 		wg.Add(1)
-		go server.handleRequest(cc, req, sending, wg)
+		go server.handleRequest(cc, req, sending, wg, opt.HandleTimeout)
 	}
 	wg.Wait()
 	_ = cc.Close()
@@ -190,16 +181,38 @@ func (server *Server) sendResponse(cc codec.Codec, header *codec.Header, body in
 	}
 }
 
-func (server *Server) handleRequest(cc codec.Codec, req *Request, sending *sync.Mutex, wg *sync.WaitGroup) {
+func (server *Server) handleRequest(cc codec.Codec, req *Request, sending *sync.Mutex, wg *sync.WaitGroup, timeout time.Duration) {
 	defer wg.Done()
 
 	fmt.Println("handle request", req.header.Seq, req.argv.Interface())
 
-	err := req.service.call(req.mtype, req.argv, req.replyv)
+	if timeout == 0 {
+		err := req.service.call(req.mtype, req.argv, req.replyv)
+		server.handleCallError(cc, req, sending, err)
+		return
+	}
+
+	result := make(chan error)
+	go func() {
+		err := req.service.call(req.mtype, req.argv, req.replyv)
+		result <- err
+	}()
+
+	select {
+	case <-time.After(timeout):
+		err := fmt.Errorf("rpc server: request handle timeout: expect within %s", timeout)
+		server.handleCallError(cc, req, sending, err)
+	case err := <-result:
+		server.handleCallError(cc, req, sending, err)
+	}
+}
+
+func (server *Server) handleCallError(cc codec.Codec, req *Request, sending *sync.Mutex, err error) {
 	if err != nil {
 		req.header.Error = err.Error()
 		server.sendResponse(cc, req.header, invalidRequest, sending)
 		return
 	}
+
 	server.sendResponse(cc, req.header, req.replyv.Interface(), sending)
 }
