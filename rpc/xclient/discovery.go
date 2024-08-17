@@ -66,6 +66,7 @@ func (d *MultiServersDiscovery) GetAll() ([]string, error) {
 func (d *MultiServersDiscovery) Get(mode SelectMode) (string, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
 	if len(d.servers) == 0 {
 		return "", errors.New("rpc discovery: no available servers")
 	}
