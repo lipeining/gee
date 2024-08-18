@@ -36,7 +36,3 @@ func ServeCodec(codec ServerCodec) {
 func ServeConn(conn io.ReadWriteCloser) {
 	DefaultServer.ServeConn(conn)
 }
-
-func ServeRequest(codec ServerCodec) error {
-	return DefaultServer.ServeRequest(codec)
-}

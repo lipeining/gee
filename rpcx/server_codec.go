@@ -55,24 +55,27 @@ func (c *serverCodec) ReadRequestBody(body interface{}) error {
 }
 
 func (c *serverCodec) WriteResponse(header *Response, body interface{}) (err error) {
-	defer func() {
-		// TODO: 为什么忽略错误？
-		_ = c.buf.Flush()
-		if err != nil {
-			_ = c.Close()
-		}
-	}()
-
 	if err := c.enc.Encode(header); err != nil {
-		log.Println("gobrpc: got error encoding header:", err)
-		return err
-	}
-	if err := c.enc.Encode(body); err != nil {
-		log.Println("gobrpc: got error encoding body:", err)
+		if c.buf.Flush() == nil {
+			// Should not happen, so if it does,
+			// shut down the connection to signal that the connection is broken.
+			log.Println("gobrpc: got error encoding header:", err)
+			c.Close()
+		}
 		return err
 	}
 
-	return nil
+	if err := c.enc.Encode(body); err != nil {
+		if c.buf.Flush() == nil {
+			// Should not happen, so if it does,
+			// shut down the connection to signal that the connection is broken.
+			log.Println("gobrpc: got error encoding body:", err)
+			c.Close()
+		}
+		return err
+	}
+
+	return c.buf.Flush()
 }
 
 func (c *serverCodec) Close() error {

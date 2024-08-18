@@ -2,20 +2,19 @@ package rpcx
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Server struct {
 	serviceMap sync.Map
-	reqLock    sync.Mutex // protects freeReq
-	freeReq    *Request
-	respLock   sync.Mutex // protects freeResp
-	freeResp   *Response
 }
 
 func NewServer() *Server {
@@ -101,31 +100,112 @@ func (server *Server) ServeConn(conn io.ReadWriteCloser) {
 	server.ServeCodec(NewServerCodec(conn))
 }
 
-func (server *Server) ServeCodec(codec ServerCodec) {
-	// sending := new(sync.Mutex) // make sure to send a complete response
-	// wg := new(sync.WaitGroup)  // wait until all request are handled
+var invalidRequest = struct{}{}
 
-	// for {
-	// 	req, err := server.readRequest(codec)
-	// 	if err != nil {
-	// 		if req == nil {
-	// 			// it's not possible to recover, so close the connection
-	// 			// already read all request
-	// 			break
-	// 		}
-	// 		req.header.Error = err.Error()
-	// 		server.sendResponse(codec, req.header, invalidRequest, sending)
-	// 		continue
-	// 	}
-	// 	wg.Add(1)
-	// 	go server.handleRequest(codec, req, sending, wg, opt.HandleTimeout)
-	// }
-	// wg.Wait()
-	// _ = codec.Close()
+func (server *Server) ServeCodec(codec ServerCodec) {
+	sending := new(sync.Mutex) // make sure to send a complete response
+	wg := new(sync.WaitGroup)  // wait until all request are handled
+
+	for {
+		req, err := server.readRequest(codec)
+		if err != nil {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				// already read all request
+				break
+			}
+
+			log.Println("rpc: server cannot decode request: " + err.Error())
+			resp := &Response{ServiceMethod: req.ServiceMethod, Seq: req.Seq, Error: err.Error()}
+			server.sendResponse(codec, resp, invalidRequest, sending)
+			continue
+		}
+		wg.Add(1)
+
+		go server.handleRequest(codec, req, sending, wg)
+	}
+	wg.Wait()
+	codec.Close()
 }
 
-func (server *Server) ServeRequest(codec ServerCodec) error {
-	// read codec header and body
-	// do
-	return nil
+func (server *Server) handleCallError(codec ServerCodec, req *Request, sending *sync.Mutex, err error) {
+	resp := &Response{
+		ServiceMethod: req.ServiceMethod,
+		Seq:           req.Seq,
+	}
+
+	if err != nil {
+		resp.Error = err.Error()
+		server.sendResponse(codec, resp, invalidRequest, sending)
+		return
+	}
+
+	server.sendResponse(codec, resp, req.replyv.Interface(), sending)
+}
+
+func (server *Server) sendResponse(codec ServerCodec, resp *Response, body any, sending *sync.Mutex) {
+	sending.Lock()
+	defer sending.Unlock()
+
+	if err := codec.WriteResponse(resp, body); err != nil {
+		log.Println("rpc server: send response, got error: ", err)
+	}
+}
+
+func (server *Server) readRequest(codec ServerCodec) (req *Request, err error) {
+	// try read a request first
+	req = new(Request)
+	err = codec.ReadRequestHeader(req)
+	if err != nil {
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			return
+		}
+
+		// cannot decode, discard body
+		codec.ReadRequestBody(nil)
+		return
+	}
+
+	req.service, req.mtype, err = server.findService(req.ServiceMethod)
+	if err != nil {
+		return
+	}
+
+	req.argv = req.mtype.newArgv()
+	req.replyv = req.mtype.newReplyv()
+
+	// make sure that argvi is a pointer,
+	// ReadBody need a pointer as parameter
+	argvi := req.argv.Interface()
+	if req.argv.Type().Kind() != reflect.Ptr {
+		argvi = req.argv.Addr().Interface()
+	}
+
+	err = codec.ReadRequestBody(argvi)
+	return
+}
+
+func (server *Server) handleRequest(codec ServerCodec, req *Request, sending *sync.Mutex, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	fmt.Println("handle request for", req.Seq, req.argv.Interface())
+
+	if req.Timeout == 0 {
+		err := req.service.call(req.mtype, req.argv, req.replyv)
+		server.handleCallError(codec, req, sending, err)
+		return
+	}
+
+	result := make(chan error)
+	go func() {
+		err := req.service.call(req.mtype, req.argv, req.replyv)
+		result <- err
+	}()
+
+	select {
+	case <-time.After(req.Timeout):
+		err := fmt.Errorf("rpc server: request handle timeout: expect within %s", req.Timeout)
+		server.handleCallError(codec, req, sending, err)
+	case err := <-result:
+		server.handleCallError(codec, req, sending, err)
+	}
 }
