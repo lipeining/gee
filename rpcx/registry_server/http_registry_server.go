@@ -68,6 +68,23 @@ func (r *httpRegistryServer) ServeHTTP(w http.ResponseWriter, req *http.Request)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(msg)
+	case "DELETE":
+		data, err := io.ReadAll(req.Body)
+		if err != nil {
+			log.Println("POST rpc server, read body error: ", err)
+			w.WriteHeader(http.StatusPreconditionFailed)
+			return
+		}
+
+		p := PostServerParam{}
+		err = json.Unmarshal(data, &p)
+		if err != nil {
+			log.Println("POST rpc server, parse body error: ", err)
+			w.WriteHeader(http.StatusPreconditionFailed)
+			return
+		}
+
+		r.removeServer(p)
 	case "POST":
 		data, err := io.ReadAll(req.Body)
 		if err != nil {
@@ -141,4 +158,17 @@ func (r *httpRegistryServer) getServers(service string) []string {
 
 	sort.Strings(list)
 	return list
+}
+
+func (r *httpRegistryServer) removeServer(p PostServerParam) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	servers := r.servers[p.Service]
+	if servers == nil {
+		return
+	}
+
+	delete(servers, p.Addr)
+	r.servers[p.Service] = servers
 }
