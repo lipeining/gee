@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"reflect"
+	"rpcx/registry"
 	"strings"
 	"sync"
 	"time"
@@ -15,13 +16,54 @@ import (
 
 type Server struct {
 	serviceMap sync.Map
+	opts       ServerOptions
 }
 
-func NewServer() *Server {
-	return &Server{}
+type ServerOptions struct {
+	name     string
+	registry registry.Registry
+}
+
+type ServerOption func(*ServerOptions)
+
+func ServerRegistry(r registry.Registry) ServerOption {
+	return func(o *ServerOptions) {
+		o.registry = r
+	}
+}
+
+func ServerName(name string) ServerOption {
+	return func(o *ServerOptions) {
+		o.name = name
+	}
+}
+
+func NewServer(options ...ServerOption) *Server {
+	opts := ServerOptions{}
+
+	for _, o := range options {
+		o(&opts)
+	}
+
+	return &Server{opts: opts}
 }
 
 func (server *Server) Accept(lis net.Listener) {
+	if server.opts.registry != nil {
+		nodes := make([]*registry.Node, 0)
+		nodes = append(nodes, &registry.Node{
+			Address: lis.Addr().Network() + "::" + lis.Addr().String(),
+		})
+		err := server.opts.registry.Register(&registry.Service{
+			Name:  server.opts.name,
+			Nodes: nodes,
+		})
+
+		if err != nil {
+			log.Println("server accept, register service error:", err)
+		}
+	}
+
 	for {
 		conn, err := lis.Accept()
 		if err != nil {
