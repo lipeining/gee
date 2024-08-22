@@ -14,6 +14,7 @@ import (
 type Client struct {
 	opts     ClientOptions
 	codec    ClientCodec
+	balancer Balancer
 	mu       sync.Mutex
 	seq      uint64
 	pending  map[uint64]*Call
@@ -23,6 +24,7 @@ type Client struct {
 
 type ClientOptions struct {
 	name     string
+	mode     SelectMode
 	registry registry.Registry
 }
 
@@ -37,6 +39,12 @@ func ClientRegistry(r registry.Registry) ClientOption {
 func ClientName(name string) ClientOption {
 	return func(o *ClientOptions) {
 		o.name = name
+	}
+}
+
+func ClientBalancer(mode SelectMode) ClientOption {
+	return func(o *ClientOptions) {
+		o.mode = mode
 	}
 }
 
@@ -68,12 +76,16 @@ func NewClient(options ...ClientOption) (*Client, error) {
 		return nil, errors.New("server service is missing")
 	}
 
-	network, address, err := getServerAddress(service)
+	balancer := NewBalancer(opts.mode)
+	log.Println("balancer type", opts.mode)
+
+	network, address, err := getServerAddress(balancer, service)
 
 	if err != nil {
 		return nil, err
 	}
 
+	log.Println("client connect to", network, address)
 	conn, err := net.Dial(network, address)
 	if err != nil {
 		return nil, err
@@ -82,10 +94,11 @@ func NewClient(options ...ClientOption) (*Client, error) {
 	codec := NewClientCodec(conn)
 
 	client := &Client{
-		opts:    opts,
-		codec:   codec,
-		pending: make(map[uint64]*Call),
-		seq:     1,
+		opts:     opts,
+		codec:    codec,
+		balancer: balancer,
+		pending:  make(map[uint64]*Call),
+		seq:      1,
 	}
 
 	go client.receive()
@@ -93,19 +106,27 @@ func NewClient(options ...ClientOption) (*Client, error) {
 	return client, nil
 }
 
-func getServerAddress(service *registry.Service) (string, string, error) {
-	// todo balancer: hash, random, R-R tec
+func getServerAddress(balancer Balancer, service *registry.Service) (string, string, error) {
 	nodes := service.Nodes
 	if len(nodes) == 0 {
 		return "", "", errors.New("server do not have nodes")
 	}
 
-	// get the first,
-	Address := nodes[0].Address
+	// use balancer choose server
+	servers := make([]string, 0)
+	for _, node := range nodes {
+		servers = append(servers, node.Address)
+	}
+	balancer.Reset(servers)
 
-	index := strings.Index(Address, AddressSpliter)
-	network, address := Address[:index], Address[index+len(AddressSpliter):]
+	network, address := parseAddress(balancer.Get())
 	return network, address, nil
+}
+
+func parseAddress(addr string) (string, string) {
+	index := strings.Index(addr, AddressSpliter)
+	network, address := addr[:index], addr[index+len(AddressSpliter):]
+	return network, address
 }
 
 // func Dial(network, address string) (*Client, error) {
