@@ -6,10 +6,13 @@ import (
 	"io"
 	"log"
 	"net"
+	"rpcx/registry"
+	"strings"
 	"sync"
 )
 
 type Client struct {
+	opts     ClientOptions
 	codec    ClientCodec
 	mu       sync.Mutex
 	seq      uint64
@@ -18,28 +21,68 @@ type Client struct {
 	shutdown bool // server has told us to stop
 }
 
+type ClientOptions struct {
+	name     string
+	registry registry.Registry
+}
+
+type ClientOption func(*ClientOptions)
+
+func ClientRegistry(r registry.Registry) ClientOption {
+	return func(o *ClientOptions) {
+		o.registry = r
+	}
+}
+
+func ClientName(name string) ClientOption {
+	return func(o *ClientOptions) {
+		o.name = name
+	}
+}
+
 var _ io.Closer = (*Client)(nil)
 var ErrShutdown = errors.New("connection is shut down")
 
-func Dial(network, address string) (*Client, error) {
+func NewClient(options ...ClientOption) (*Client, error) {
+	opts := ClientOptions{}
+
+	for _, o := range options {
+		o(&opts)
+	}
+
+	// get network, address from registry
+	if opts.registry == nil {
+		return nil, errors.New("should set registry")
+	}
+
+	services, err := opts.registry.GetService(opts.name)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(services) == 0 {
+		return nil, errors.New("server service is missing")
+	}
+	service := services[0]
+	if service == nil {
+		return nil, errors.New("server service is missing")
+	}
+
+	network, address, err := getServerAddress(service)
+
+	if err != nil {
+		return nil, err
+	}
+
 	conn, err := net.Dial(network, address)
 	if err != nil {
 		return nil, err
 	}
 
-	return NewClient(conn), nil
-}
+	codec := NewClientCodec(conn)
 
-// func DialHTTP(network, address string) (*Client, error) {
-// 	return nil, nil
-// }
-
-func NewClient(conn io.ReadWriteCloser) *Client {
-	return NewClientWithCodec(NewClientCodec(conn))
-}
-
-func NewClientWithCodec(codec ClientCodec) *Client {
 	client := &Client{
+		opts:    opts,
 		codec:   codec,
 		pending: make(map[uint64]*Call),
 		seq:     1,
@@ -47,8 +90,48 @@ func NewClientWithCodec(codec ClientCodec) *Client {
 
 	go client.receive()
 
-	return client
+	return client, nil
 }
+
+func getServerAddress(service *registry.Service) (string, string, error) {
+	// todo balancer: hash, random, R-R tec
+	nodes := service.Nodes
+	if len(nodes) == 0 {
+		return "", "", errors.New("server do not have nodes")
+	}
+
+	// get the first,
+	Address := nodes[0].Address
+
+	index := strings.Index(Address, AddressSpliter)
+	network, address := Address[:index], Address[index+len(AddressSpliter):]
+	return network, address, nil
+}
+
+// func Dial(network, address string) (*Client, error) {
+// 	conn, err := net.Dial(network, address)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+
+// 	return NewClient(conn), nil
+// }
+
+// func NewClient(conn io.ReadWriteCloser) *Client {
+// 	return NewClientWithCodec(NewClientCodec(conn))
+// }
+
+// func NewClientWithCodec(codec ClientCodec) *Client {
+// 	client := &Client{
+// 		codec:   codec,
+// 		pending: make(map[uint64]*Call),
+// 		seq:     1,
+// 	}
+
+// 	go client.receive()
+
+// 	return client
+// }
 
 func (client *Client) Call(ctx context.Context, serviceMethod string, args any, reply any) error {
 	call := client.Go(serviceMethod, args, reply, make(chan *Call, 1))

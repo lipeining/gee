@@ -1,0 +1,3 @@
+package rpcx
+
+const AddressSpliter = "::"

@@ -52,7 +52,7 @@ func (server *Server) Accept(lis net.Listener) {
 	if server.opts.registry != nil {
 		nodes := make([]*registry.Node, 0)
 		nodes = append(nodes, &registry.Node{
-			Address: lis.Addr().Network() + "::" + lis.Addr().String(),
+			Address: lis.Addr().Network() + AddressSpliter + lis.Addr().String(),
 		})
 		err := server.opts.registry.Register(&registry.Service{
 			Name:  server.opts.name,

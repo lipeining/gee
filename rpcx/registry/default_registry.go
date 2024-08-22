@@ -197,13 +197,36 @@ func (r *httpRegistry) removeServer(serverAddr, name, addr string) error {
 }
 
 func (r *httpRegistry) GetService(name string, options ...GetOption) ([]*Service, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	opts := GetOptions{}
+	var opts GetOptions
 	for _, o := range options {
 		o(&opts)
 	}
 
-	return []*Service{r.servers[name]}, nil
+	service := r.servers[name]
+	if service != nil {
+		return []*Service{service}, nil
+	}
+
+	services := make([]*Service, 0)
+	serverAddr := r.opts.Addrs[0]
+	list, err := r.getServers(serverAddr, name)
+	if err != nil {
+		return nil, err
+	}
+
+	nodes := make([]*Node, 0)
+	for _, addr := range list {
+		nodes = append(nodes, &Node{
+			Address: addr,
+		})
+	}
+
+	s := Service{
+		Name:  name,
+		Nodes: nodes,
+	}
+	services = append(services, &s)
+	r.servers[name] = &s
+
+	return services, nil
 }

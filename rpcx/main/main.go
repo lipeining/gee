@@ -82,8 +82,9 @@ func testTcpCall(serverAddr string) {
 	}
 }
 
-func testClientCall(network, serverAddr string) {
-	client, err := rpcx.Dial(network, serverAddr)
+func testClientCall(registryServerAddr string) {
+	regClient := registry.NewRegistry(registry.Addrs("http://127.0.0.1"+registryServerAddr+"/_rpc_/registry"), registry.Timeout(time.Minute))
+	client, err := rpcx.NewClient(rpcx.ClientName("Foo"), rpcx.ClientRegistry(regClient))
 	if err != nil {
 		panic(err)
 	}
@@ -110,5 +111,5 @@ func main() {
 	go startServer(serverAddr, registryServerAddr)
 	time.Sleep(time.Second * 5)
 	// testTcpCall(serverAddr)
-	testClientCall("tcp", serverAddr)
+	testClientCall(registryServerAddr)
 }
